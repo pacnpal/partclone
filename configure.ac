@@ -1,6 +1,7 @@
 AC_INIT([Partclone],[0.3.47],[thomas@clonezilla.org])
 
 #condition for CPU target
+AC_CANONICAL_HOST
 AC_CANONICAL_TARGET
 AM_CONDITIONAL([X64], [test "$target_cpu" = x86_64])
 AM_INIT_AUTOMAKE([-Wall foreign])
@@ -15,6 +16,16 @@ AC_PROG_INSTALL
 AC_PATH_PROG(RM, rm, rm)
 AC_PROG_LN_S
 AC_PROG_MKDIR_P
+
+# Detect host OS so we can skip Linux-only checks (byteswap.h, mntent, ...)
+# on macOS / Darwin.
+have_darwin=no
+case $host_os in
+    darwin*) have_darwin=yes ;;
+esac
+AM_CONDITIONAL([HAVE_DARWIN], [test "$have_darwin" = "yes"])
+AS_IF([test "$have_darwin" = "yes"],
+    [AC_DEFINE([HAVE_DARWIN], [1], [Define to 1 if building on macOS/Darwin])])
 
 # Enable large file support.
 AC_SYS_LARGEFILE
@@ -511,8 +522,12 @@ if test "$ac_cv_have_decl_isnormal" = "yes" ; then
 fi
 
 # fix bug #1093194
+# byteswap.h is glibc-specific; only consumed by apfs/nilfs2 sources, which
+# are unsupported on Darwin. Downgrade the missing-header error there.
 AC_CHECK_HEADERS([byteswap.h], ,
-    AC_MSG_ERROR([*** byteswap header file (byteswap.h) not found]))
+    [AS_IF([test "$have_darwin" = "yes"],
+        [AC_MSG_NOTICE([byteswap.h not present; apfs/nilfs2 unavailable on this host])],
+        [AC_MSG_ERROR([*** byteswap header file (byteswap.h) not found])])])
 
 ## libtinfo ##
 AC_CHECK_FUNCS([memfd_create])
