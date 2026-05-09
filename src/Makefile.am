@@ -7,7 +7,7 @@ PCL_XXHASH_CFLAGS =
 endif
 
 AUTOMAKE_OPTIONS = subdir-objects
-AM_CPPFLAGS = -DLOCALEDIR=\"$(localedir)\" -D_FILE_OFFSET_BITS=64 $(PCL_XXHASH_CFLAGS) $(ISAL_CFLAGS)
+AM_CPPFLAGS = -DLOCALEDIR=\"$(localedir)\" -D_FILE_OFFSET_BITS=64 $(PCL_XXHASH_CFLAGS) $(ISAL_CFLAGS) $(OPENSSL_CFLAGS)
 LDADD = $(LIBINTL) $(PCL_XXHASH_LIBS)
 LIBS += $(ISAL_LIBS)
 sbin_PROGRAMS=partclone.info partclone.dd partclone.restore partclone.chkimg partclone.imager #partclone.imgfuse #partclone.block
