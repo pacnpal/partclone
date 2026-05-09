@@ -23,8 +23,11 @@
 #   contrib/macos-grow-partition.sh /dev/disk4 1 5G
 #
 # Limitations:
-#   - macOS diskutil only supports resizing FAT32, HFS+, APFS containers
-#     in place. NTFS, ext{2,3,4}, exFAT, FAT12/16 will report an error.
+#   - macOS diskutil resizes HFS+ and APFS containers in place reliably.
+#     For FAT32 it usually only works when the disk uses GPT; on MBR
+#     ("FDisk_partition_scheme") it returns "file system volume format
+#     does not support resizing" because there is no FAT32 grow tool in
+#     macOS. NTFS, ext{2,3,4}, exFAT, FAT12/16 are never resizable.
 #   - The trailing free space must be physically adjacent to the
 #     partition's slot. Run `diskutil list <disk>` to confirm.
 #   - Refuses to touch /dev/disk0 (the boot disk).
@@ -72,9 +75,72 @@ echo "==> current layout for $DISK_BUF"
 diskutil list "$DISK_BUF" || true
 echo
 
+# diskutil resizeVolume needs the volume unmounted (or at least the whole
+# disk quiesced). Detect any mounted slice on this disk and unmount it.
+is_mounted() {
+    # "Mounted" / "Mount Point" lines from diskutil info — robust against
+    # localization edge cases by checking both fields.
+    diskutil info "$1" 2>/dev/null | awk -F': ' '
+        /^[ \t]*Mounted[ \t]*:/ {
+            sub(/^ */, "", $2);
+            if ($2 == "Yes") { found=1 }
+        }
+        /^[ \t]*Mount Point[ \t]*:/ {
+            sub(/^ */, "", $2);
+            if ($2 != "" && $2 != "Not applicable (no file system)") { found=1 }
+        }
+        END { exit (found ? 0 : 1) }
+    '
+}
+
+NEEDS_UNMOUNT=0
+if is_mounted "$SLICE"; then
+    NEEDS_UNMOUNT=1
+else
+    # Sibling slices on the same disk can also block a resize.
+    for s in $(diskutil list "$DISK_BUF" 2>/dev/null \
+                 | awk -v d="$DISK_ID" '$NF ~ "^"d"s[0-9]+$" {print $NF}'); do
+        if is_mounted "/dev/$s"; then
+            NEEDS_UNMOUNT=1
+            break
+        fi
+    done
+fi
+
+if [ "$NEEDS_UNMOUNT" -eq 1 ]; then
+    echo "==> $DISK_BUF has mounted volumes; unmounting whole disk"
+    if ! diskutil unmountDisk "$DISK_BUF"; then
+        echo "==> retrying with force unmount"
+        diskutil unmountDisk force "$DISK_BUF" || {
+            echo "ERROR: could not unmount $DISK_BUF — close any apps using it and retry." >&2
+            exit 1
+        }
+    fi
+    echo
+fi
+
 # Capture size before/after for reporting.
 SIZE_BEFORE=$(diskutil info "$SLICE" 2>/dev/null \
     | awk -F': ' '/Disk Size|Total Size/ {sub(/^ */, "", $2); print $2; exit}')
+
+# Detect partition scheme + FS type so we can warn early when we already
+# know diskutil's resize is going to fail (e.g. FAT32 inside MBR).
+DISK_SCHEME=$(diskutil info "$DISK_BUF" 2>/dev/null \
+    | awk -F': ' '/Content \(IOContent\)|Partition Type/ {sub(/^ */, "", $2); print $2; exit}')
+SLICE_FS=$(diskutil info "$SLICE" 2>/dev/null \
+    | awk -F': ' '/File System Personality|Type \(Bundle\)/ {sub(/^ */, "", $2); print $2; exit}')
+case "$DISK_SCHEME" in
+    *FDisk_partition_scheme*|*MBR*|*DOS*)
+        case "$SLICE_FS" in
+            *MS-DOS*FAT32*|*FAT32*|*msdos*)
+                echo "WARNING: $SLICE is FAT32 inside an MBR scheme."
+                echo "         macOS diskutil typically refuses this combination."
+                echo "         If the next step fails, see the post-failure hints."
+                echo
+                ;;
+        esac
+        ;;
+esac
 
 echo "==> diskutil resizeVolume $SLICE $SIZE"
 if diskutil resizeVolume "$SLICE" "$SIZE"; then
@@ -92,16 +158,31 @@ cat >&2 <<EOF
 ==> diskutil resizeVolume failed.
 
 Possible reasons:
-  * Filesystem on $SLICE is not resizable by macOS (NTFS, ext, exFAT,
-    FAT12/16). For FAT16 you can reformat or use Linux tools instead.
+  * Filesystem on $SLICE is not resizable by macOS. Common case:
+    FAT32 inside an MBR scheme — diskutil's FAT32 resize is GPT-only,
+    and macOS ships no FAT32 grow tool. NTFS, ext, exFAT, FAT12/16
+    are never resizable on macOS.
   * The trailing free space is not physically adjacent to $SLICE.
     Check 'diskutil list $DISK_BUF' — the (free space) row must be
     immediately after the partition slot you're trying to grow.
   * The volume is in use. Try: diskutil unmountDisk $DISK_BUF
 
-Manual MBR-edit fallback (advanced, FAT32 only):
-  1. diskutil unmountDisk $DISK_BUF
-  2. sudo fdisk -e $DISK_BUF       # interactive: edit slot $PNUM size
-  3. sudo fsck_msdos -n ${DISK_BUF}s${PNUM}
+What actually works for FAT32 on MBR
+  Option A — Linux live USB / VM (cleanest, keeps data):
+    Boot a Linux ISO (Ubuntu, GParted Live, SystemRescue) with the
+    target disk attached, then either run GParted and resize the slot
+    + filesystem in one move, or:
+        sudo parted /dev/sdX resizepart <N> 100%
+        sudo fatresize -s max /dev/sdX<N>
+
+  Option B — macOS, partition table only (advanced, NOT enough on its own):
+    'sudo fdisk -e $DISK_BUF' grows the MBR slot, but the FAT32
+    filesystem inside stays its original size. There is no FAT32
+    grow utility in macOS or Homebrew (no fatresize, no parted),
+    so finish the job from Linux as in Option A.
+
+  Option C — reformat (loses data on $SLICE):
+    Copy files off, then:
+        sudo diskutil partitionDisk $DISK_BUF MBR MS-DOS DATA R
 EOF
 exit 1

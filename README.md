@@ -135,6 +135,29 @@ in a VM:
             ~/Downloads/Compaq_Armada sdb \
             ~/Compaq_Armada.img --verify
 
+For the full set of conversion recipes (single-partition,
+whole-disk-to-image, whole-disk-to-USB, post-restore grow, recovery
+procedure), the tested macOS gotchas, and a breakdown of what's actually
+inside a Clonezilla `savedisk` directory, see
+[`docs/clonezilla-macos.md`](docs/clonezilla-macos.md).
+
+### Growing a restored partition to fill the target disk
+
+Clonezilla preserves the original partition geometry, so a 3 GiB FAT32
+restored onto an 8 GiB USB stick leaves 5 GiB unused. Two paths:
+
+- **GPT FAT32, HFS+, APFS:** `contrib/macos-grow-partition.sh` calls
+  `diskutil resizeVolume` and works.
+- **MBR FAT32 (the common Clonezilla USB case):** `diskutil` refuses
+  ("file system volume format does not support resizing") because macOS
+  ships no FAT32 grow tool. Use [**fatgrow**][fatgrow] — a separate
+  native-macOS tool written specifically for this case. It resizes the
+  MBR slot AND the FAT32 inside in one shot, no libparted, no Linux VM:
+
+      sudo /usr/local/bin/fatgrow --grow --size max --i-have-a-backup /dev/disk4
+
+[fatgrow]: https://github.com/pacnpal/fatgrow
+
 ### Known limitations on macOS
 
 - Only FAT12/16/32 is supported. `extfs`, `ntfs`, `hfs+`, `apfs`, `btrfs`,
