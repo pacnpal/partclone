@@ -19,9 +19,11 @@
 #define _LARGEFILE64_SOURCE
 #endif
 #include <errno.h>
+#ifdef __linux__
 #include <features.h>
-#include <fcntl.h>
 #include <malloc.h>
+#endif
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stdio.h>

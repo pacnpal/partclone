@@ -34,6 +34,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+
+#ifndef __linux__
+/* ntfsfixboot uses Linux-only block-device geometry ioctls
+ * (HDIO_GETGEO from linux/hdreg.h). Build a no-op stub on
+ * non-Linux platforms so the rest of partclone still links. */
+int main(int argc, char **argv) {
+    (void)argc; (void)argv;
+    fputs("partclone.ntfsfixboot is not supported on this platform "
+          "(Linux-only HDIO_GETGEO/BLKxxx ioctls).\n", stderr);
+    return 1;
+}
+#else
+
 #include <linux/hdreg.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -488,3 +501,5 @@ int main(int argc, char *argv[]) {
 
   return 0;
 }
+
+#endif /* __linux__ */

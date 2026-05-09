@@ -12,7 +12,10 @@
  */
 
 #include <config.h>
+#ifdef __linux__
 #include <features.h>
+#include <malloc.h>
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -20,7 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <malloc.h>
 #include <stdarg.h>
 #include <string.h>
 

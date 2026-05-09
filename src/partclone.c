@@ -19,29 +19,41 @@
 #ifndef _LARGEFILE64_SOURCE
 #define _LARGEFILE64_SOURCE
 #endif
+#ifdef __linux__
 #include <features.h>
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/ioctl.h>
+#ifdef __linux__
 #include <sys/mount.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#ifdef __linux__
 #include <malloc.h>
+#endif
 #include <stdarg.h>
 #include <string.h>
 #include <getopt.h>
 #include <locale.h>
+#ifdef __linux__
 #include <mntent.h>
+#endif
 #include <limits.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <assert.h>
 #include "gettext.h"
+#ifdef __linux__
 #include <linux/fs.h>
+#elif defined(__APPLE__)
+#include <sys/disk.h>
+#endif
 #include <sys/types.h>
 #include <dirent.h>
 #define _(STRING) gettext(STRING)
@@ -55,6 +67,18 @@
 #endif
 #if defined(linux) && defined(_IOR) && !defined(BLKGETSIZE64)
 #define BLKGETSIZE64    _IOR(0x12,114,size_t)   /* Get device size in bytes. */
+#endif
+
+/* macOS has no O_LARGEFILE (all files are large by default) */
+#ifndef O_LARGEFILE
+#define O_LARGEFILE 0
+#endif
+
+/* macOS has no O_DIRECT; the closest equivalent is fcntl(fd, F_NOCACHE, 1).
+ * Define as 0 here so the bitmask is a no-op; --read-direct-io/--write-direct-io
+ * become silent no-ops on Darwin (TODO: wire F_NOCACHE post-open). */
+#ifndef O_DIRECT
+#define O_DIRECT 0
 #endif
 
 unsigned long long      rescue_write_size;
@@ -1235,7 +1259,9 @@ const char *get_bitmap_mode_str(bitmap_mode_t bitmap_mode)
 /// get partition size
 unsigned long long get_partition_size(int* ret) {
 	unsigned long long dest_size = 0;
+#ifdef BLKGETSIZE
 	unsigned long dest_block;
+#endif
 	struct stat stat;
 	int debug = 1;
 
@@ -1256,6 +1282,21 @@ unsigned long long get_partition_size(int* ret) {
 				dest_size = (unsigned long long)(dest_block * 512);
 			log_mesg(1, 0, 0, debug, "get block %lu and device size %llu by ioctl BLKGETSIZE,\n", dest_block, dest_size);
 			return dest_size;
+#endif
+#if defined(__APPLE__) && defined(DKIOCGETBLOCKCOUNT) && defined(DKIOCGETBLOCKSIZE)
+			{
+				uint64_t block_count = 0;
+				uint32_t block_size_bytes = 0;
+				if (ioctl(*ret, DKIOCGETBLOCKCOUNT, &block_count) < 0 ||
+				    ioctl(*ret, DKIOCGETBLOCKSIZE, &block_size_bytes) < 0) {
+					log_mesg(0, 0, 0, debug, "get device size error (DKIOC), Use option -C to disable size checking(Dangerous).\n");
+				} else {
+					dest_size = (unsigned long long)block_count * (unsigned long long)block_size_bytes;
+					log_mesg(1, 0, 0, debug, "get device size %llu via DKIOCGETBLOCKCOUNT(%llu)*DKIOCGETBLOCKSIZE(%u)\n",
+					    dest_size, (unsigned long long)block_count, block_size_bytes);
+				}
+				return dest_size;
+			}
 #endif
 		}
 	} else {
@@ -1626,7 +1667,7 @@ void load_image_bitmap(int* ret, cmd_opt opt, file_system_info fs_info, image_op
  */
 
 int check_mount(const char* device, char* mount_p){
-
+#ifdef __linux__
 	char *real_file = NULL, *real_fsname = NULL;
 	FILE * f;
 	struct mntent * mnt;
@@ -1668,6 +1709,13 @@ int check_mount(const char* device, char* mount_p){
 	if (real_file){ free(real_file); real_file = NULL;}
 	if (real_fsname){ free(real_fsname); real_fsname = NULL;}
 	return isMounted;
+#else
+	/* Non-Linux (macOS et al): mtab-style probe unavailable.
+	 * TODO: replace with getfsstat()/statfs() to keep the safety check. */
+	(void)device;
+	(void)mount_p;
+	return 0;
+#endif
 }
 
 int open_source(char* source, cmd_opt* opt) {

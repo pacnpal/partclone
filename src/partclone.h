@@ -16,7 +16,9 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <stdint.h>
+#ifdef __linux__
 #include <malloc.h>
+#endif
 #include <stdarg.h>
 #include <getopt.h>
 #include <errno.h>
