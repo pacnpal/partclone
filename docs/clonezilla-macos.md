@@ -309,6 +309,31 @@ These bit us during development. Documented so you don't rediscover them.
    not 0x0C (FAT32 LBA).** Both work, but `parted` and many Linux
    tools prefer the CHS variant. `partclone.restore` doesn't care.
 
+8. **`partclone.<fs> -c` reads the FAT 4 bytes at a time and FAILS
+   on `/dev/rdiskN` (raw character) — silently.** `EINVAL` from
+   the kernel is returned, the cluster scanner aborts on the first
+   read, and "Space in use" gets reported as just the FAT region
+   size (~12k blocks for a 3 GB FAT32). The verify script worked
+   around this by switching to `/dev/diskN` (the buffered block
+   device) for clone-mode reads. fsck and partclone.restore handle
+   raw fine because they use larger buffered I/O.
+
+9. **`partclone.fat -c` and pipefail.** POSIX sh has no `pipefail`,
+   so a `partclone.<fs> -c | partclone.chkimg -s -` pipeline where
+   the cloner fails silently (see #8) will produce empty stdout
+   that chkimg "successfully" parses as zero values. The verify
+   script clones to a tempfile first, then chkimgs the tempfile,
+   so any cloner failure surfaces immediately.
+
+10. **macOS auto-mount writes metadata before you can fsck cleanly.**
+    Between a successful `partclone.restore` and a follow-up verify
+    pass, macOS arbitrates the disk and mounts visible FAT volumes,
+    creating `.fseventsd/`, `.Spotlight-V100/`, etc. on first mount.
+    These add roughly 4 clusters (≈ 16 KiB / 32 sectors) of legitimate
+    new data. The verify script accepts up to 1% growth (with a
+    64-block floor for small volumes) without flagging mismatch.
+    Below the floor or any SHRINK is treated as real data loss.
+
 ## Post-restore verification
 
 `contrib/macos-verify-clonezilla-disk.sh` does four passes:

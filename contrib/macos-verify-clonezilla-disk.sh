@@ -146,10 +146,20 @@ for part in $PARTS; do
         *.aa)    PREFIX="${IMG_FIRST%.aa}"; DECOMP="cat"      ;;
     esac
 
-    SLICE="${RAW_BASE}s${PNUM}"
+    # macOS distinction:
+    #   /dev/rdiskNsM  - raw character device. Requires sector-aligned I/O.
+    #                    partclone.fat -c walks the FAT 4 bytes at a time,
+    #                    which fails on this device — the scan aborts
+    #                    silently and reports only ~12k blocks "used"
+    #                    (the FAT region itself), even though the data is
+    #                    fully present. fsck_msdos handles raw fine.
+    #   /dev/diskNsM   - buffered block device. Kernel handles arbitrary
+    #                    read/write sizes. Use this for partclone.fat.
+    BUF_SLICE="${DEV_BASE}s${PNUM}"
+    RAW_SLICE="${RAW_BASE}s${PNUM}"
+    SLICE="$BUF_SLICE"
     if [ ! -e "$SLICE" ]; then
-        # raw-disk node may not exist, fall back to buffered
-        SLICE="${DEV_BASE}s${PNUM}"
+        SLICE="$RAW_SLICE"
     fi
 
     echo
@@ -203,9 +213,27 @@ for part in $PARTS; do
     fi
 
     echo "     [3/4] re-cloning $SLICE -> partclone.chkimg ..."
-    if ! "$PC_TOOL" -c -N -s "$SLICE" -o - -L "$CLN_LOG" -B -F 2>/dev/null \
-        | "$CHKIMG" -s - -L "$TGT_LOG" -B -F >"$TGT_OUT" 2>&1; then
-        echo "     ✗ re-cloned restored slice failed partclone.chkimg"
+    # Two-step (clone-to-tempfile, then chkimg the tempfile) instead of a
+    # pipe — POSIX sh has no pipefail, so a failed clone with an empty
+    # stdout would otherwise let chkimg "succeed" on no input and produce
+    # an empty / zeroed report. Detect the failure here, surface stderr.
+    CLONE_IMG="$TMPDIR_V/clone-${part}.img"
+    CLONE_ERR="$TMPDIR_V/clone-${part}.err"
+    if ! "$PC_TOOL" -c -s "$SLICE" -o "$CLONE_IMG" \
+            -L "$CLN_LOG" -B -F >"$CLONE_ERR" 2>&1; then
+        echo "     ✗ partclone.<fs> clone of $SLICE failed (rc=$?):"
+        sed 's/^/         /' "$CLONE_ERR" | tail -10
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        continue
+    fi
+    if [ ! -s "$CLONE_IMG" ]; then
+        echo "     ✗ clone produced empty image at $CLONE_IMG"
+        sed 's/^/         /' "$CLONE_ERR" | tail -10
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        continue
+    fi
+    if ! "$CHKIMG" -s "$CLONE_IMG" -L "$TGT_LOG" -B -F >"$TGT_OUT" 2>&1; then
+        echo "     ✗ partclone.chkimg of cloned image failed (rc=$?):"
         sed 's/^/         /' "$TGT_OUT" | tail -10
         FAIL_COUNT=$((FAIL_COUNT + 1))
         continue
@@ -217,10 +245,40 @@ for part in $PARTS; do
     echo "          tgt: fs=$TGT_FS  dev=$TGT_DEV  used=$TGT_USED"
 
     # ---- 4. compare -------------------------------------------------------
-    if [ "$SRC_FS"   = "$TGT_FS"  ] && \
-       [ "$SRC_DEV"  = "$TGT_DEV" ] && \
-       [ "$SRC_USED" = "$TGT_USED" ]; then
-        echo "     [4/4] ✓ match: fs/device-size/used-space all equal"
+    # File system type and Device size must match exactly. Used-space is
+    # allowed to GROW slightly without failing the verify: macOS auto-mounts
+    # FAT volumes between restore and verify, and the kernel writes
+    # .fseventsd / .Spotlight-V100 metadata on first mount. That adds a
+    # handful of clusters (~32 blocks = 16 KiB on a fresh restore). It is
+    # not data loss.
+    #
+    # Tolerance: target may be up to 1% LARGER than source, but never
+    # SMALLER. A smaller post-restore used count means real data loss.
+    SRC_BLOCKS=$(awk -v s="$SRC_USED" 'BEGIN { for (i=1;i<=split(s,a," ");i++) if (a[i]+0 > 0) print a[i]+0 }' | tail -1)
+    TGT_BLOCKS=$(awk -v s="$TGT_USED" 'BEGIN { for (i=1;i<=split(s,a," ");i++) if (a[i]+0 > 0) print a[i]+0 }' | tail -1)
+    USED_OK=0
+    if [ -n "$SRC_BLOCKS" ] && [ -n "$TGT_BLOCKS" ]; then
+        if [ "$SRC_BLOCKS" -eq "$TGT_BLOCKS" ]; then
+            USED_OK=1
+        elif [ "$TGT_BLOCKS" -gt "$SRC_BLOCKS" ]; then
+            DELTA=$((TGT_BLOCKS - SRC_BLOCKS))
+            # 1% tolerance, with a 64-block floor for tiny volumes.
+            TOL=$((SRC_BLOCKS / 100))
+            [ "$TOL" -lt 64 ] && TOL=64
+            if [ "$DELTA" -le "$TOL" ]; then
+                USED_OK=1
+            fi
+        fi
+    fi
+
+    if [ "$SRC_FS" = "$TGT_FS" ] && \
+       [ "$SRC_DEV" = "$TGT_DEV" ] && \
+       [ "$USED_OK" -eq 1 ]; then
+        if [ "$SRC_BLOCKS" = "$TGT_BLOCKS" ]; then
+            echo "     [4/4] ✓ match: fs/device-size/used-space all equal"
+        else
+            echo "     [4/4] ✓ match: fs/device-size match; used+$((TGT_BLOCKS - SRC_BLOCKS)) blocks (mount-side metadata, within tolerance)"
+        fi
         OK_COUNT=$((OK_COUNT + 1))
     else
         echo "     [4/4] ✗ MISMATCH"
