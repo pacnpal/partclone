@@ -94,6 +94,47 @@ the binaries still build and the final exit code is 0.
     fsck_msdos -n /dev/rdiskN     # sanity-check the restored FAT
     hdiutil detach /dev/diskN
 
+### Restoring a whole Clonezilla `savedisk` (helper scripts)
+
+The single-partition recipe above is fine for one slice, but a Clonezilla
+"savedisk" image set contains an MBR, a post-MBR gap and one partclone
+image per partition. `contrib/` ships a small set of POSIX-`sh` helpers
+that orchestrate the whole sequence on macOS. They only call standard
+macOS tools (`dd`, `diskutil`, `hdiutil`, `fsck_*`) plus the partclone
+binaries built above.
+
+| Script | Purpose |
+| --- | --- |
+| `macos-clonezilla.sh` | Friendly entry point. Picks an image dir from `~/Downloads`, picks a target disk via `diskutil list`, then runs restore + verify (+ optional grow). |
+| `macos-restore-clonezilla-disk.sh` | Low-level: writes MBR/gap and restores each partition to a `/dev/diskN` or sparse `.img` file. Accepts `--verify`, `--grow N`, `--no-confirm`. |
+| `macos-verify-clonezilla-disk.sh` | After-restore check: `partclone.chkimg` on the source image, `fsck_*` on the restored slice, re-clones the slice through `partclone.chkimg`, and compares filesystem / device size / used space to the source. |
+| `macos-grow-partition.sh` | Grows a partition slot + filesystem to fill trailing free space (FAT32, HFS+ — anything `diskutil resizeVolume` understands). |
+| `macos-clonezilla-to-raw.sh` | Converts a Clonezilla image set into a flat raw `.img` file (sparse). The result is usable with `dd`, `hdiutil attach`, or as a VM disk. |
+
+Typical usage — restore to an external disk, grow the FAT32 partition to
+fill the disk, then verify:
+
+    sudo PARTCLONE=$(pwd)/src/partclone.restore \
+         contrib/macos-clonezilla.sh \
+            ~/Downloads/Compaq_Armada \
+            /dev/disk4
+
+…or fully scripted:
+
+    sudo VERIFY=1 GROW=1 GROW_PART=1 \
+         PARTCLONE=$(pwd)/src/partclone.restore \
+         contrib/macos-restore-clonezilla-disk.sh \
+            --no-confirm --verify --grow 1 \
+            ~/Downloads/Compaq_Armada sdb /dev/disk4
+
+Convert the same image set into a raw `.img` file you can `dd` or boot
+in a VM:
+
+    PARTCLONE=$(pwd)/src/partclone.restore \
+        contrib/macos-clonezilla-to-raw.sh \
+            ~/Downloads/Compaq_Armada sdb \
+            ~/Compaq_Armada.img --verify
+
 ### Known limitations on macOS
 
 - Only FAT12/16/32 is supported. `extfs`, `ntfs`, `hfs+`, `apfs`, `btrfs`,
